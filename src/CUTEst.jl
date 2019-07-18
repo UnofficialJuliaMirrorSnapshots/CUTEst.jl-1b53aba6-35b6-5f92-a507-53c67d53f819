@@ -17,8 +17,11 @@ export CUTEstModel, sifdecoder
 
 mutable struct CUTEstModel <: AbstractNLPModel
   meta    :: NLPModelMeta
-
   counters :: Counters
+  hrows :: Vector{Int32}
+  hcols :: Vector{Int32}
+  jrows :: Vector{Int32}
+  jcols :: Vector{Int32}
 end
 
 const funit   = convert(Int32, 42)
@@ -72,6 +75,19 @@ include("core_interface.jl")
 include("julia_interface.jl")
 include("classification.jl")
 
+function delete_temp_files()
+  for f in ("ELFUN", "EXTER", "GROUP", "RANGE")
+    for ext in ("f", "o")
+      fname = "$f.$ext"
+      isfile(fname) && rm(fname, force=true)
+    end
+  end
+  for f in ("OUTSDIF.d", "AUTOMAT.d")
+    isfile(f) && rm(f, force=true)
+  end
+  nothing
+end
+
 """Decode problem and build shared library.
 
 Optional arguments are passed directly to the SIF decoder.
@@ -98,17 +114,20 @@ function sifdecoder(name :: String, args...; verbose :: Bool=false,
   outlog = tempname()
   errlog = tempname()
   cd(ENV["cutest-problems"]) do
+    delete_temp_files()
     run(pipeline(ignorestatus(`$sifdecoderbin $args $name`), stdout=outlog, stderr=errlog))
     print(read(errlog, String))
     verbose && println(read(outlog, String))
 
-    run(`gfortran -c -fPIC ELFUN.f EXTER.f GROUP.f RANGE.f`)
-    run(`$linker $sh_flags -o $libname.$(Libdl.dlext) ELFUN.o EXTER.o GROUP.o RANGE.o $libpath $libgfortran`)
-    run(`mv OUTSDIF.d $outsdif`)
-    run(`mv AUTOMAT.d $automat`)
-    run(`rm ELFUN.f EXTER.f GROUP.f RANGE.f ELFUN.o EXTER.o GROUP.o RANGE.o`)
-    global cutest_lib = Libdl.dlopen(libname,
-      Libdl.RTLD_NOW | Libdl.RTLD_DEEPBIND | Libdl.RTLD_GLOBAL)
+    if isfile("ELFUN.f")
+      run(`gfortran -c -fPIC ELFUN.f EXTER.f GROUP.f RANGE.f`)
+      run(`$linker $sh_flags -o $libname.$(Libdl.dlext) ELFUN.o EXTER.o GROUP.o RANGE.o $libpath $libgfortran`)
+      run(`mv OUTSDIF.d $outsdif`)
+      run(`mv AUTOMAT.d $automat`)
+      delete_temp_files()
+      global cutest_lib = Libdl.dlopen(libname,
+        Libdl.RTLD_NOW | Libdl.RTLD_DEEPBIND | Libdl.RTLD_GLOBAL)
+    end
   end
 end
 
@@ -208,7 +227,11 @@ function CUTEstModel(name :: String, args...; decode :: Bool=true, verbose :: Bo
                       nlin=nlin, nnln=nnln,
                       name=splitext(name)[1])
 
-  nlp = CUTEstModel(meta, Counters())
+  hrows = Vector{Int32}(undef, nnzh)
+  hcols = Vector{Int32}(undef, nnzh)
+  jrows = Vector{Int32}(undef, nnzj)
+  jcols = Vector{Int32}(undef, nnzj)
+  nlp = CUTEstModel(meta, Counters(), hrows, hcols, jrows, jcols)
 
   cutest_instances += 1
   finalizer(cutest_finalize, nlp)
